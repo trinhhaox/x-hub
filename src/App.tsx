@@ -77,7 +77,14 @@ export function App() {
         if (manual) showToast('Xhub đang ở phiên bản mới nhất!');
       }
     } catch (e: any) {
-      if (manual) showToast(`Chưa thể kiểm tra cập nhật: ${e.message || e}`);
+      if (manual) {
+        const msg = String(e?.message || e);
+        if (msg.includes('Could not fetch a valid release JSON') || msg.includes('404')) {
+          showToast('Xhub đang ở phiên bản mới nhất!');
+        } else {
+          showToast(`Chưa thể kiểm tra cập nhật: ${msg}`);
+        }
+      }
     }
   };
 
