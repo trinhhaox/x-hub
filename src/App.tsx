@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import {
@@ -22,7 +23,9 @@ import {
   ArrowLeft,
   Home,
   Layers,
-  SunMedium
+  SunMedium,
+  UploadCloud,
+  FolderOpen
 } from 'lucide-react';
 import './App.css';
 
@@ -65,6 +68,11 @@ export function App() {
   const [availableUpdate, setAvailableUpdate] = useState<any | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<string | null>(null);
+
+  // App Installation state
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const checkForUpdates = async (manual = false) => {
     try {
@@ -268,6 +276,81 @@ export function App() {
       showToast(`Lỗi ngắt kết nối: ${err}`);
     }
   };
+
+  // App Installation Handlers
+  const doInstallApp = async (filePath: string) => {
+    if (!selectedDevice) {
+      showToast('Vui lòng chọn một thiết bị trước khi cài đặt!');
+      return;
+    }
+    const fileName = filePath.split('/').pop() || filePath;
+    try {
+      setIsInstalling(true);
+      setInstallProgress(`Đang nạp ${fileName} vào ${selectedDevice.name}...`);
+      const res = await invoke<string>('install_app_package', {
+        deviceId: selectedDevice.id,
+        platform: selectedDevice.platform,
+        reality: selectedDevice.reality,
+        filePath,
+      });
+      showToast(res);
+      setInstallProgress(null);
+    } catch (err: any) {
+      showToast(`Lỗi cài đặt: ${err}`);
+      setInstallProgress(null);
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
+  const handlePickAndInstallApp = async () => {
+    if (!selectedDevice) {
+      showToast('Vui lòng chọn thiết bị trước!');
+      return;
+    }
+    try {
+      const filePath = await invoke<string | null>('pick_app_file');
+      if (!filePath) return;
+      await doInstallApp(filePath);
+    } catch (err: any) {
+      showToast(`Lỗi chọn file: ${err}`);
+    }
+  };
+
+  // Native Drag and Drop listener from Tauri webview
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === 'over') {
+          setIsDragOver(true);
+        } else if (event.payload.type === 'drop') {
+          setIsDragOver(false);
+          const paths = event.payload.paths;
+          if (paths && paths.length > 0) {
+            const target = paths[0];
+            const lower = target.toLowerCase();
+            if (lower.endsWith('.apk') || lower.endsWith('.ipa') || lower.endsWith('.app')) {
+              doInstallApp(target);
+            } else {
+              showToast('Chỉ hỗ trợ file gói .apk, .ipa hoặc .app!');
+            }
+          }
+        } else {
+          setIsDragOver(false);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('Lỗi lắng nghe drag drop:', err);
+      });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [selectedDevice]);
 
   const truncateId = (idStr?: string) => {
     if (!idStr) return 'N/A';
@@ -712,8 +795,72 @@ export function App() {
         )}
 
         {selectedDevice && activeTab === 'apps' && (
-          <div style={{ padding: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            <p>Hỗ trợ kéo thả file .apk hoặc .ipa vào đây để cài đặt trực tiếp vào {selectedDevice.name}.</p>
+          <div className="apps-tab-content">
+            <div
+              className={`dropzone-card ${isDragOver ? 'drag-over' : ''}`}
+              onClick={handlePickAndInstallApp}
+              title="Nhấp để duyệt file hoặc kéo thả file từ Finder vào đây"
+            >
+              <div className="dropzone-icon-box">
+                <UploadCloud size={24} />
+              </div>
+              <div className="dropzone-title">
+                {isInstalling ? 'Đang nạp ứng dụng...' : 'Cài đặt nhanh ứng dụng'}
+              </div>
+              <div className="dropzone-subtitle">
+                Kéo thả file gói cài đặt vào đây hoặc nhấp để chọn file
+              </div>
+
+              <button
+                className="btn-choose-file"
+                disabled={isInstalling}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlePickAndInstallApp();
+                }}
+              >
+                <FolderOpen size={14} />
+                <span>Chọn file từ máy tính</span>
+              </button>
+
+              <div className="supported-badge-row">
+                {selectedDevice.platform === 'Android' ? (
+                  <span className="format-badge">.APK (Android)</span>
+                ) : (
+                  <>
+                    <span className="format-badge">.IPA</span>
+                    <span className="format-badge">.APP</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {installProgress && (
+              <div className="install-status-box">
+                <RefreshCw size={16} className="animate-spin" />
+                <div style={{ flex: 1, fontSize: '12px', lineHeight: 1.4 }}>
+                  <div style={{ fontWeight: 600 }}>Tiến trình cài đặt</div>
+                  <div style={{ fontSize: '11px', opacity: 0.9 }}>{installProgress}</div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              💡 <strong>Lưu ý:</strong>
+              <ul style={{ paddingLeft: '16px', marginTop: '4px' }}>
+                {selectedDevice.platform === 'Android' ? (
+                  <>
+                    <li>Thiết bị Android cần bật <strong>USB Debugging</strong>.</li>
+                    <li>Tự động ghi đè bản cũ (<code>-r</code>) và cho phép bản thử nghiệm (<code>-t</code>).</li>
+                  </>
+                ) : (
+                  <>
+                    <li>Thiết bị iOS cần bật <strong>Developer Mode</strong>.</li>
+                    <li>iOS Simulator hỗ trợ trực tiếp gói <code>.app</code> và <code>.ipa</code>.</li>
+                  </>
+                )}
+              </ul>
+            </div>
           </div>
         )}
 

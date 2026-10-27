@@ -653,6 +653,99 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
     }
 }
 
+#[tauri::command]
+fn pick_app_file() -> Result<Option<String>, String> {
+    let script = r#"
+        try
+            set pickedFile to (choose file with prompt "Chọn file ứng dụng (.apk, .ipa, .app):" of type {"apk", "ipa", "app"})
+            return POSIX path of pickedFile
+        on error
+            return ""
+        end try
+    "#;
+
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("Không thể mở hộp thoại chọn file: {}", e))?;
+
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(path_str))
+    }
+}
+
+#[tauri::command]
+fn install_app_package(
+    device_id: String,
+    platform: String,
+    reality: String,
+    file_path: String,
+) -> Result<String, String> {
+    if !is_safe_identifier(&device_id) {
+        return Err("Mã thiết bị không hợp lệ".to_string());
+    }
+
+    let path_obj = Path::new(&file_path);
+    if !path_obj.exists() {
+        return Err(format!("File không tồn tại: {}", file_path));
+    }
+
+    let enhanced_path = get_enhanced_path();
+
+    if platform == "Android" {
+        let adb = resolve_bin("adb");
+        let output = Command::new(&adb)
+            .env("PATH", &enhanced_path)
+            .args(["-s", &device_id, "install", "-r", "-t", "-d", &file_path])
+            .output()
+            .map_err(|e| format!("Lỗi khởi chạy ADB install: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+
+        if combined.contains("Success") {
+            Ok(format!("Cài đặt thành công APK lên thiết bị {}", device_id))
+        } else {
+            Err(format!("Cài đặt thất bại:\n{}", combined))
+        }
+    } else if platform == "iOS" {
+        if reality == "simulated" {
+            let output = Command::new("xcrun")
+                .env("PATH", &enhanced_path)
+                .args(["simctl", "install", &device_id, &file_path])
+                .output()
+                .map_err(|e| format!("Lỗi khởi chạy simctl install: {}", e))?;
+
+            if output.status.success() {
+                Ok(format!("Cài đặt thành công lên iOS Simulator {}", device_id))
+            } else {
+                let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+                Err(format!("Lỗi cài đặt Simulator:\n{}", err_msg))
+            }
+        } else {
+            let output = Command::new("xcrun")
+                .env("PATH", &enhanced_path)
+                .args(["devicectl", "device", "install", "app", "--device", &device_id, &file_path])
+                .output()
+                .map_err(|e| format!("Lỗi khởi chạy devicectl install: {}", e))?;
+
+            if output.status.success() {
+                Ok(format!("Cài đặt thành công lên thiết bị iOS {}", device_id))
+            } else {
+                let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+                let out_msg = String::from_utf8_lossy(&output.stdout).to_string();
+                Err(format!("Lỗi cài đặt iOS:\n{}\n{}", err_msg, out_msg))
+            }
+        }
+    } else {
+        Err("Nền tảng không hỗ trợ".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -666,7 +759,9 @@ pub fn run() {
             launch_view_screen,
             send_android_keyevent,
             take_screenshot,
-            check_system_environment
+            check_system_environment,
+            pick_app_file,
+            install_app_package
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
