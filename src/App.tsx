@@ -133,24 +133,35 @@ export function App() {
   }, []);
 
   // Fetch devices
-  const fetchDevices = async () => {
+  const fetchDevices = async (isManual = false) => {
     try {
-      setLoading(true);
+      if (isManual) setLoading(true);
       const res = await invoke<DeviceItem[]>('get_all_devices');
       setDevices(res);
-      if (!selectedId && res.length > 0) {
-        setSelectedId(res[0].id);
-      }
+      setSelectedId((prev) => {
+        // 1. Nếu người dùng đã chọn thiết bị và thiết bị vẫn đang kết nối -> giữ nguyên tuyệt đối
+        if (prev && res.some((d) => d.id === prev)) {
+          return prev;
+        }
+        // 2. Nếu chưa từng chọn thiết bị nào (lần đầu khởi động app)
+        if (!prev && res.length > 0) {
+          return res[0].id;
+        }
+        // 3. Nếu thiết bị trước đó đã bị ngắt kết nối hoàn toàn
+        return res[0]?.id || null;
+      });
     } catch (err) {
       console.error('Error scanning devices:', err);
     } finally {
-      setLoading(false);
+      if (isManual) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDevices();
-    const interval = setInterval(fetchDevices, 5000);
+    fetchDevices(true);
+    const interval = setInterval(() => {
+      fetchDevices(false);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -240,7 +251,7 @@ export function App() {
       const res = await invoke<string>('connect_adb_device', { ipPort: adbIpInput });
       showToast(res);
       setShowAddModal(false);
-      fetchDevices();
+      fetchDevices(true);
     } catch (err: any) {
       showToast(`Lỗi kết nối: ${err}`);
     }
@@ -252,7 +263,7 @@ export function App() {
     try {
       const res = await invoke<string>('disconnect_adb_device', { ipPort: selectedDevice.id });
       showToast(res);
-      fetchDevices();
+      fetchDevices(true);
     } catch (err: any) {
       showToast(`Lỗi ngắt kết nối: ${err}`);
     }
@@ -281,7 +292,7 @@ export function App() {
             <button
               className="icon-btn"
               title="Làm mới danh sách"
-              onClick={fetchDevices}
+              onClick={() => fetchDevices(true)}
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
