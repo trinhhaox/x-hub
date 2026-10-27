@@ -1,5 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import {
   Smartphone,
   Search,
@@ -15,7 +17,8 @@ import {
   FileText,
   Info,
   RefreshCw,
-  Monitor
+  Monitor,
+  ArrowUpCircle
 } from 'lucide-react';
 import './App.css';
 
@@ -52,6 +55,71 @@ export function App() {
   // Modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [adbIpInput, setAdbIpInput] = useState('100.76.122.48:5555');
+  const [envWarning, setEnvWarning] = useState<string | null>(null);
+
+  // Auto-updater state
+  const [availableUpdate, setAvailableUpdate] = useState<any | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<string | null>(null);
+
+  const checkForUpdates = async (manual = false) => {
+    try {
+      if (manual) showToast('Đang kiểm tra bản cập nhật mới...');
+      const update = await check();
+      if (update?.available) {
+        setAvailableUpdate(update);
+        showToast(`Có bản cập nhật mới: v${update.version}`);
+      } else {
+        if (manual) showToast('Xhub đang ở phiên bản mới nhất!');
+      }
+    } catch (e: any) {
+      if (manual) showToast(`Chưa thể kiểm tra cập nhật: ${e.message || e}`);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!availableUpdate) return;
+    try {
+      setIsUpdating(true);
+      setUpdateProgress('Đang tải bản cập nhật...');
+      let downloaded = 0;
+      let total = 0;
+      await availableUpdate.downloadAndInstall((event: any) => {
+        if (event.event === 'Started') {
+          total = event.data.contentLength || 0;
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          if (total > 0) {
+            setUpdateProgress(`Đang tải: ${Math.round((downloaded / total) * 100)}%`);
+          }
+        } else if (event.event === 'Finished') {
+          setUpdateProgress('Đã tải xong! Đang cài đặt và khởi động lại...');
+        }
+      });
+      await relaunch();
+    } catch (err: any) {
+      setIsUpdating(false);
+      setUpdateProgress(null);
+      showToast(`Lỗi cập nhật: ${err}`);
+    }
+  };
+
+  // Check system dependencies and auto check updates
+  useEffect(() => {
+    invoke<{ has_adb: boolean; has_scrcpy: boolean }>('check_system_environment')
+      .then((status) => {
+        if (!status.has_adb || !status.has_scrcpy) {
+          const missing = [];
+          if (!status.has_adb) missing.push('adb');
+          if (!status.has_scrcpy) missing.push('scrcpy');
+          setEnvWarning(`Thiếu công cụ: ${missing.join(', ')}. Chạy: brew install scrcpy android-platform-tools`);
+        }
+      })
+      .catch((e) => console.error(e));
+
+    // Check updates silently on startup
+    checkForUpdates(false);
+  }, []);
 
   // Fetch devices
   const fetchDevices = async () => {
@@ -343,6 +411,40 @@ export function App() {
           </div>
         </div>
 
+        {envWarning && (
+          <div
+            style={{
+              background: '#fff3cd',
+              color: '#856404',
+              padding: '8px 14px',
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid #ffeeba',
+            }}
+          >
+            <span>⚠️ {envWarning}</span>
+            <button
+              style={{
+                background: '#856404',
+                color: '#fff',
+                border: 'none',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+              onClick={() => {
+                navigator.clipboard.writeText('brew install scrcpy android-platform-tools');
+                showToast('Đã copy lệnh cài đặt!');
+              }}
+            >
+              Copy lệnh
+            </button>
+          </div>
+        )}
+
         {/* Center Mockup */}
         <div className="center-canvas">
           {selectedDevice ? (
@@ -405,6 +507,13 @@ export function App() {
       {/* CỘT 3: INSPECTOR PANE */}
       <div className="inspector-pane">
         <div className="toolbar-header" style={{ justifyContent: 'flex-end', gap: '6px' }}>
+          <button
+            className="icon-btn"
+            title="Kiểm tra bản cập nhật mới"
+            onClick={() => checkForUpdates(true)}
+          >
+            <ArrowUpCircle size={15} color={availableUpdate ? 'var(--accent)' : undefined} />
+          </button>
           <button className="icon-btn" title="Settings">
             <SlidersHorizontal size={15} />
           </button>
@@ -560,6 +669,40 @@ export function App() {
                 onClick={handleConnectAdb}
               >
                 Kết nối
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POPUP CẬP NHẬT TỰ ĐỘNG KHI CÓ BẢN MỚI */}
+      {availableUpdate && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <h3>🎉 Đã có phiên bản mới: v{availableUpdate.version}</h3>
+            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.5 }}>
+              {availableUpdate.body || 'Bản phát hành mới với nhiều cải tiến hiệu năng và tính năng mới.'}
+            </p>
+            {updateProgress && (
+              <div style={{ fontSize: '12px', color: 'var(--accent)', marginBottom: '12px', fontWeight: 500 }}>
+                {updateProgress}
+              </div>
+            )}
+            <div className="modal-actions">
+              <button
+                className="secondary-pill-btn"
+                disabled={isUpdating}
+                onClick={() => setAvailableUpdate(null)}
+              >
+                Để sau
+              </button>
+              <button
+                className="secondary-pill-btn"
+                disabled={isUpdating}
+                style={{ background: 'var(--accent)', color: '#fff', border: 'none' }}
+                onClick={handleInstallUpdate}
+              >
+                {isUpdating ? 'Đang cập nhật...' : 'Cập nhật ngay'}
               </button>
             </div>
           </div>

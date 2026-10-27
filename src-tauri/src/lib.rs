@@ -1,5 +1,60 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::Command;
+
+fn resolve_bin(name: &str) -> String {
+    // 1. Check in standard Homebrew paths (Apple Silicon & Intel)
+    let candidates = [
+        format!("/opt/homebrew/bin/{}", name),
+        format!("/usr/local/bin/{}", name),
+        format!("{}/Library/Android/sdk/platform-tools/{}", std::env::var("HOME").unwrap_or_default(), name),
+    ];
+
+    for path in &candidates {
+        if Path::new(path).exists() {
+            return path.clone();
+        }
+    }
+
+    // 2. Try 'which'
+    if let Ok(out) = Command::new("which").arg(name).output() {
+        if out.status.success() {
+            let found = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !found.is_empty() {
+                return found;
+            }
+        }
+    }
+
+    name.to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EnvStatus {
+    pub has_adb: bool,
+    pub has_scrcpy: bool,
+    pub has_xcrun: bool,
+    pub adb_path: String,
+    pub scrcpy_path: String,
+}
+
+#[tauri::command]
+fn check_system_environment() -> EnvStatus {
+    let adb = resolve_bin("adb");
+    let scrcpy = resolve_bin("scrcpy");
+    let xcrun_ok = Command::new("which").arg("xcrun").output().map(|o| o.status.success()).unwrap_or(false);
+
+    let adb_ok = Command::new(&adb).arg("version").output().map(|o| o.status.success()).unwrap_or(false);
+    let scrcpy_ok = Command::new(&scrcpy).arg("-v").output().map(|o| o.status.success()).unwrap_or(false);
+
+    EnvStatus {
+        has_adb: adb_ok,
+        has_scrcpy: scrcpy_ok,
+        has_xcrun: xcrun_ok,
+        adb_path: adb,
+        scrcpy_path: scrcpy,
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DeviceItem {
@@ -265,8 +320,9 @@ fn scan_ios_simulators() -> Vec<DeviceItem> {
 
 fn scan_android_devices() -> Vec<DeviceItem> {
     let mut list = Vec::new();
+    let adb = resolve_bin("adb");
 
-    let output = Command::new("/opt/homebrew/bin/adb")
+    let output = Command::new(&adb)
         .args(["devices", "-l"])
         .output();
 
@@ -297,7 +353,7 @@ fn scan_android_devices() -> Vec<DeviceItem> {
             let mut manufacturer = "".to_string();
 
             if status == "device" {
-                if let Ok(prop_out) = Command::new("/opt/homebrew/bin/adb")
+                if let Ok(prop_out) = Command::new(&adb)
                     .args(["-s", &serial, "shell", "getprop ro.product.model; getprop ro.build.version.release; getprop ro.product.manufacturer"])
                     .output()
                 {
@@ -359,7 +415,8 @@ fn get_all_devices() -> Vec<DeviceItem> {
 
 #[tauri::command]
 fn connect_adb_device(ip_port: String) -> Result<String, String> {
-    let output = Command::new("/opt/homebrew/bin/adb")
+    let adb = resolve_bin("adb");
+    let output = Command::new(&adb)
         .args(["connect", &ip_port])
         .output()
         .map_err(|e| e.to_string())?;
@@ -374,7 +431,8 @@ fn connect_adb_device(ip_port: String) -> Result<String, String> {
 
 #[tauri::command]
 fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
-    let output = Command::new("/opt/homebrew/bin/adb")
+    let adb = resolve_bin("adb");
+    let output = Command::new(&adb)
         .args(["disconnect", &ip_port])
         .output()
         .map_err(|e| e.to_string())?;
@@ -385,9 +443,10 @@ fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
 #[tauri::command]
 fn launch_view_screen(device_id: String, platform: String, reality: String, screen_url: Option<String>) -> Result<String, String> {
     if platform == "Android" {
+        let scrcpy = resolve_bin("scrcpy");
         let status = Command::new("nohup")
             .args([
-                "/opt/homebrew/bin/scrcpy",
+                &scrcpy,
                 "-s",
                 &device_id,
                 "--window-title",
@@ -427,7 +486,8 @@ fn launch_view_screen(device_id: String, platform: String, reality: String, scre
 
 #[tauri::command]
 fn send_android_keyevent(serial: String, keycode: u32) -> Result<String, String> {
-    let output = Command::new("/opt/homebrew/bin/adb")
+    let adb = resolve_bin("adb");
+    let output = Command::new(&adb)
         .args(["-s", &serial, "shell", "input", "keyevent", &keycode.to_string()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -445,14 +505,15 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
     let dest_path = format!("{}/Downloads/Screenshot_{}_{}.png", home, platform, timestamp);
 
     if platform == "Android" {
+        let adb = resolve_bin("adb");
         let remote_tmp = "/sdcard/screenshot_tmp.png";
-        let _ = Command::new("/opt/homebrew/bin/adb")
+        let _ = Command::new(&adb)
             .args(["-s", &device_id, "shell", "screencap", "-p", remote_tmp])
             .output();
-        let _ = Command::new("/opt/homebrew/bin/adb")
+        let _ = Command::new(&adb)
             .args(["-s", &device_id, "pull", remote_tmp, &dest_path])
             .output();
-        let _ = Command::new("/opt/homebrew/bin/adb")
+        let _ = Command::new(&adb)
             .args(["-s", &device_id, "shell", "rm", remote_tmp])
             .output();
 
@@ -473,13 +534,16 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             get_all_devices,
             connect_adb_device,
             disconnect_adb_device,
             launch_view_screen,
             send_android_keyevent,
-            take_screenshot
+            take_screenshot,
+            check_system_environment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

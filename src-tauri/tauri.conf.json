@@ -37,5 +37,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBEMEI0NjM3MDFCMUIxNkMKUldSc3NiRUJOMFlMRGFBb3djanpOZzIrVE5GVFhhMjZhTjhtdE9qVHNNVzRFRk9rbzExTFZsM1gK",
+      "endpoints": [
+        "https://github.com/trinhhaox/x-hub/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
