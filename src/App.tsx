@@ -18,7 +18,11 @@ import {
   Info,
   RefreshCw,
   Monitor,
-  ArrowUpCircle
+  ArrowUpCircle,
+  ArrowLeft,
+  Home,
+  Layers,
+  SunMedium
 } from 'lucide-react';
 import './App.css';
 
@@ -370,10 +374,39 @@ export function App() {
               <>
                 <button
                   className="icon-btn"
+                  title="Quay lại (Back)"
+                  onClick={() => handleKey(4, 'Quay lại')}
+                >
+                  <ArrowLeft size={15} />
+                </button>
+                <button
+                  className="icon-btn"
+                  title="Màn hình chính (Home)"
+                  onClick={() => handleKey(3, 'Home')}
+                >
+                  <Home size={15} />
+                </button>
+                <button
+                  className="icon-btn"
+                  title="Đa nhiệm / Ứng dụng gần đây (Recents)"
+                  onClick={() => handleKey(187, 'Đa nhiệm')}
+                >
+                  <Layers size={15} />
+                </button>
+                <div style={{ width: '1px', height: '16px', background: 'var(--border-subtle)', margin: '0 2px' }} />
+                <button
+                  className="icon-btn"
                   title="Nút Nguồn (Power)"
                   onClick={() => handleKey(26, 'Nguồn')}
                 >
                   <Power size={15} />
+                </button>
+                <button
+                  className="icon-btn"
+                  title="Đánh thức màn hình (Wake up)"
+                  onClick={() => handleKey(224, 'Đánh thức')}
+                >
+                  <SunMedium size={15} />
                 </button>
                 <button
                   className="icon-btn"
@@ -389,6 +422,7 @@ export function App() {
                 >
                   <VolumeX size={15} />
                 </button>
+                <div style={{ width: '1px', height: '16px', background: 'var(--border-subtle)', margin: '0 2px' }} />
               </>
             )}
             <button
@@ -454,12 +488,54 @@ export function App() {
                   className={`phone-screen ${
                     selectedDevice.platform === 'Android' ? 'android-screen' : ''
                   }`}
+                  onClick={handleViewScreen}
+                  style={{ cursor: 'pointer' }}
+                  title="Nhấp để mở màn hình điều khiển scrcpy"
                 >
                   {/* Dynamic Island cho iOS hoặc Punch Hole cho Android */}
                   {selectedDevice.platform === 'iOS' ? (
                     <div className="dynamic-island" />
                   ) : (
                     <div className="punch-hole" />
+                  )}
+
+                  {selectedDevice.platform === 'Android' && (
+                    <>
+                      <div className="screen-center-prompt">
+                        <Monitor size={36} strokeWidth={1.6} color="rgba(255,255,255,0.95)" />
+                        <span style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: '#fff' }}>
+                          Mở màn hình điều khiển
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.8)', marginTop: '2px' }}>
+                          Nhấp để khởi chạy scrcpy
+                        </span>
+                      </div>
+
+                      {/* Thanh 3 phím điều hướng ảo Android */}
+                      <div className="android-nav-bar" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="nav-btn"
+                          title="Quay lại (Back)"
+                          onClick={() => handleKey(4, 'Quay lại')}
+                        >
+                          ◀
+                        </button>
+                        <button
+                          className="nav-btn"
+                          title="Màn hình chính (Home)"
+                          onClick={() => handleKey(3, 'Home')}
+                        >
+                          ●
+                        </button>
+                        <button
+                          className="nav-btn"
+                          title="Ứng dụng gần đây (Recents)"
+                          onClick={() => handleKey(187, 'Đa nhiệm')}
+                        >
+                          ■
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>

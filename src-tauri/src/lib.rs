@@ -2,6 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
+fn get_enhanced_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let default_paths = format!(
+        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}/Library/Android/sdk/platform-tools:/usr/bin:/bin:/usr/sbin:/sbin",
+        home
+    );
+    if let Ok(existing) = std::env::var("PATH") {
+        format!("{}:{}", default_paths, existing)
+    } else {
+        default_paths
+    }
+}
+
 fn resolve_bin(name: &str) -> String {
     // 1. Check in standard Homebrew paths (Apple Silicon & Intel)
     let candidates = [
@@ -16,8 +29,9 @@ fn resolve_bin(name: &str) -> String {
         }
     }
 
-    // 2. Try 'which'
-    if let Ok(out) = Command::new("which").arg(name).output() {
+    // 2. Try 'which' with enhanced path
+    let enhanced_path = get_enhanced_path();
+    if let Ok(out) = Command::new("which").arg(name).env("PATH", &enhanced_path).output() {
         if out.status.success() {
             let found = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !found.is_empty() {
@@ -42,10 +56,28 @@ pub struct EnvStatus {
 fn check_system_environment() -> EnvStatus {
     let adb = resolve_bin("adb");
     let scrcpy = resolve_bin("scrcpy");
-    let xcrun_ok = Command::new("which").arg("xcrun").output().map(|o| o.status.success()).unwrap_or(false);
+    let enhanced_path = get_enhanced_path();
 
-    let adb_ok = Command::new(&adb).arg("version").output().map(|o| o.status.success()).unwrap_or(false);
-    let scrcpy_ok = Command::new(&scrcpy).arg("-v").output().map(|o| o.status.success()).unwrap_or(false);
+    let xcrun_ok = Command::new("which")
+        .arg("xcrun")
+        .env("PATH", &enhanced_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let adb_ok = Command::new(&adb)
+        .arg("version")
+        .env("PATH", &enhanced_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let scrcpy_ok = Command::new(&scrcpy)
+        .arg("-v")
+        .env("PATH", &enhanced_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
     EnvStatus {
         has_adb: adb_ok,
@@ -321,8 +353,10 @@ fn scan_ios_simulators() -> Vec<DeviceItem> {
 fn scan_android_devices() -> Vec<DeviceItem> {
     let mut list = Vec::new();
     let adb = resolve_bin("adb");
+    let enhanced_path = get_enhanced_path();
 
     let output = Command::new(&adb)
+        .env("PATH", &enhanced_path)
         .args(["devices", "-l"])
         .output();
 
@@ -354,6 +388,7 @@ fn scan_android_devices() -> Vec<DeviceItem> {
 
             if status == "device" {
                 if let Ok(prop_out) = Command::new(&adb)
+                    .env("PATH", &enhanced_path)
                     .args(["-s", &serial, "shell", "getprop ro.product.model; getprop ro.build.version.release; getprop ro.product.manufacturer"])
                     .output()
                 {
@@ -428,7 +463,9 @@ fn connect_adb_device(ip_port: String) -> Result<String, String> {
     }
 
     let adb = resolve_bin("adb");
+    let enhanced_path = get_enhanced_path();
     let output = Command::new(&adb)
+        .env("PATH", &enhanced_path)
         .args(["connect", &ip_port])
         .output()
         .map_err(|e| e.to_string())?;
@@ -448,7 +485,9 @@ fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
     }
 
     let adb = resolve_bin("adb");
+    let enhanced_path = get_enhanced_path();
     let output = Command::new(&adb)
+        .env("PATH", &enhanced_path)
         .args(["disconnect", &ip_port])
         .output()
         .map_err(|e| e.to_string())?;
@@ -463,20 +502,61 @@ fn launch_view_screen(device_id: String, platform: String, reality: String, scre
     }
 
     if platform == "Android" {
+        let adb = resolve_bin("adb");
         let scrcpy = resolve_bin("scrcpy");
-        let status = Command::new("nohup")
-            .args([
-                &scrcpy,
-                "-s",
-                &device_id,
-                "--window-title",
-                &format!("Xhub - {}", device_id),
-                "--stay-awake",
-            ])
-            .spawn();
 
-        match status {
-            Ok(_) => Ok("Đã khởi chạy scrcpy".to_string()),
+        if !Path::new(&scrcpy).exists() && scrcpy == "scrcpy" {
+            return Err("Chưa cài đặt công cụ scrcpy. Vui lòng chạy lệnh: brew install scrcpy".to_string());
+        }
+
+        let enhanced_path = get_enhanced_path();
+
+        // Kiểm tra xem thiết bị có online trong ADB không
+        if let Ok(chk) = Command::new(&adb)
+            .env("PATH", &enhanced_path)
+            .args(["devices"])
+            .output()
+        {
+            let chk_str = String::from_utf8_lossy(&chk.stdout);
+            let mut found = false;
+            let mut state = "not found";
+            for line in chk_str.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 && parts[0] == device_id {
+                    found = true;
+                    state = parts[1];
+                    break;
+                }
+            }
+            if found {
+                if state == "unauthorized" {
+                    return Err("Thiết bị chưa cho phép USB/Wireless Debugging. Vui lòng bấm 'Cho phép' (Allow) trên màn hình điện thoại.".to_string());
+                } else if state == "offline" {
+                    return Err("Thiết bị đang ở trạng thái Offline. Vui lòng kiểm tra lại kết nối Tailscale/Wi-Fi.".to_string());
+                }
+            }
+        }
+
+        let mut cmd = Command::new(&scrcpy);
+        cmd.arg("-s").arg(&device_id);
+        cmd.arg("--window-title").arg(format!("Xhub - {}", device_id));
+        cmd.arg("--stay-awake");
+
+        // Tối ưu cho kết nối mạng không dây (Tailscale/LAN qua cổng mạng :5555)
+        if device_id.contains(':') {
+            cmd.arg("--force-adb-forward");
+            cmd.arg("--video-bit-rate=8M");
+            cmd.arg("--max-fps=60");
+        }
+
+        cmd.env("PATH", &enhanced_path);
+        cmd.env("ADB", &adb);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+
+        match cmd.spawn() {
+            Ok(_) => Ok("Đã mở cửa sổ điều khiển scrcpy thành công".to_string()),
             Err(e) => Err(format!("Lỗi chạy scrcpy: {}", e)),
         }
     } else if platform == "iOS" {
@@ -516,7 +596,9 @@ fn send_android_keyevent(serial: String, keycode: u32) -> Result<String, String>
     }
 
     let adb = resolve_bin("adb");
+    let enhanced_path = get_enhanced_path();
     let output = Command::new(&adb)
+        .env("PATH", &enhanced_path)
         .args(["-s", &serial, "shell", "input", "keyevent", &keycode.to_string()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -545,14 +627,18 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
 
     if safe_platform == "Android" {
         let adb = resolve_bin("adb");
+        let enhanced_path = get_enhanced_path();
         let remote_tmp = "/sdcard/screenshot_tmp.png";
         let _ = Command::new(&adb)
+            .env("PATH", &enhanced_path)
             .args(["-s", &device_id, "shell", "screencap", "-p", remote_tmp])
             .output();
         let _ = Command::new(&adb)
+            .env("PATH", &enhanced_path)
             .args(["-s", &device_id, "pull", remote_tmp, &dest_path])
             .output();
         let _ = Command::new(&adb)
+            .env("PATH", &enhanced_path)
             .args(["-s", &device_id, "shell", "rm", remote_tmp])
             .output();
 
