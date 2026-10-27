@@ -1,0 +1,486 @@
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DeviceItem {
+    pub id: String,
+    pub name: String,
+    pub platform: String, // "iOS" | "Android"
+    pub reality: String,  // "physical" | "simulated"
+    pub state: String,    // "connected" | "disconnected" | "booted" | "shutdown"
+    pub os_version: String,
+    pub model: String,
+    pub product_type: String,
+    pub serial_number: String,
+    pub udid: String,
+    pub core_device_id: String,
+    pub transport_type: String, // "Wired" | "Wireless"
+    pub pairing_state: String,  // "Paired" | "Unpaired"
+    pub ddi_services: String,   // "Enabled" | "Disabled"
+    pub developer_mode: String, // "Enabled" | "Disabled"
+    pub file_system: String,
+    pub capacity: String,
+    pub ecid: String,
+    pub screen_viewing_url: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlOutput {
+    result: Option<DevicectlResult>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlResult {
+    devices: Option<Vec<DevicectlDevice>>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlDevice {
+    identifier: Option<String>,
+    #[serde(rename = "deviceProperties")]
+    device_properties: Option<DevicectlDeviceProps>,
+    #[serde(rename = "hardwareProperties")]
+    hardware_properties: Option<DevicectlHardwareProps>,
+    #[serde(rename = "connectionProperties")]
+    connection_properties: Option<DevicectlConnProps>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlDeviceProps {
+    name: Option<String>,
+    #[serde(rename = "osVersionNumber")]
+    os_version_number: Option<String>,
+    #[serde(rename = "bootState")]
+    boot_state: Option<String>,
+    #[serde(rename = "ddiServicesAvailable")]
+    ddi_services_available: Option<bool>,
+    #[serde(rename = "developerModeStatus")]
+    developer_mode_status: Option<String>,
+    #[serde(rename = "bootedFromSnapshot")]
+    booted_from_snapshot: Option<bool>,
+    #[serde(rename = "screenViewingURL")]
+    screen_viewing_url: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlHardwareProps {
+    #[serde(rename = "marketingName")]
+    marketing_name: Option<String>,
+    #[serde(rename = "productType")]
+    product_type: Option<String>,
+    #[serde(rename = "serialNumber")]
+    serial_number: Option<String>,
+    udid: Option<String>,
+    reality: Option<String>,
+    ecid: Option<serde_json::Value>,
+    #[serde(rename = "internalStorageCapacity")]
+    internal_storage_capacity: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+struct DevicectlConnProps {
+    #[serde(rename = "transportType")]
+    transport_type: Option<String>,
+    #[serde(rename = "pairingState")]
+    pairing_state: Option<String>,
+    #[serde(rename = "tunnelState")]
+    tunnel_state: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct SimctlOutput {
+    devices: Option<std::collections::HashMap<String, Vec<SimctlDevice>>>,
+}
+
+#[derive(Deserialize, Default)]
+struct SimctlDevice {
+    name: String,
+    udid: String,
+    state: String,
+    #[serde(rename = "isAvailable")]
+    is_available: bool,
+    #[serde(rename = "deviceTypeIdentifier")]
+    device_type_identifier: Option<String>,
+}
+
+fn scan_ios_physical_devices() -> Vec<DeviceItem> {
+    let mut list = Vec::new();
+    let tmp_file = "/tmp/devicectl_scan.json";
+
+    let _ = Command::new("xcrun")
+        .args(["devicectl", "list", "devices", "--json-output", tmp_file])
+        .output();
+
+    if let Ok(content) = std::fs::read_to_string(tmp_file) {
+        if let Ok(parsed) = serde_json::from_str::<DevicectlOutput>(&content) {
+            if let Some(res) = parsed.result {
+                if let Some(devices) = res.devices {
+                    for dev in devices {
+                        let hw = dev.hardware_properties.unwrap_or_default();
+                        let dp = dev.device_properties.unwrap_or_default();
+                        let cp = dev.connection_properties.unwrap_or_default();
+
+                        let reality = hw.reality.clone().unwrap_or_else(|| "physical".to_string());
+                        if reality != "physical" {
+                            continue;
+                        }
+
+                        let name = dp.name.unwrap_or_else(|| "iPhone".to_string());
+                        let os_ver = format!("iOS {}", dp.os_version_number.unwrap_or_else(|| "Unknown".to_string()));
+                        let model = hw.marketing_name.unwrap_or_else(|| "iPhone".to_string());
+                        let product_type = hw.product_type.unwrap_or_else(|| "Unknown".to_string());
+                        let serial = hw.serial_number.unwrap_or_else(|| "Unknown".to_string());
+                        let udid = hw.udid.unwrap_or_else(|| "Unknown".to_string());
+                        let core_id = dev.identifier.unwrap_or_else(|| udid.clone());
+
+                        let transport = match cp.transport_type.as_deref() {
+                            Some("wired") => "Wired".to_string(),
+                            Some("wireless") => "Wireless".to_string(),
+                            _ => "Wired".to_string(),
+                        };
+
+                        let pairing = match cp.pairing_state.as_deref() {
+                            Some("paired") => "Paired".to_string(),
+                            _ => "Unpaired".to_string(),
+                        };
+
+                        let ddi = if dp.ddi_services_available.unwrap_or(false) {
+                            "Enabled".to_string()
+                        } else {
+                            "Disabled".to_string()
+                        };
+
+                        let dev_mode = match dp.developer_mode_status.as_deref() {
+                            Some("enabled") => "Enabled".to_string(),
+                            _ => "Disabled".to_string(),
+                        };
+
+                        let file_sys = if dp.booted_from_snapshot.unwrap_or(false) {
+                            "Booted From Snapshot".to_string()
+                        } else {
+                            "Standard".to_string()
+                        };
+
+                        let capacity = if let Some(cap) = hw.internal_storage_capacity {
+                            format!("{} GB", cap / 1_000_000_000)
+                        } else {
+                            "256 GB".to_string()
+                        };
+
+                        let ecid_str = hw.ecid.map(|e| e.to_string()).unwrap_or_else(|| "N/A".to_string());
+
+                        let state = match cp.tunnel_state.as_deref() {
+                            Some("connected") => "connected".to_string(),
+                            _ => dp.boot_state.unwrap_or_else(|| "connected".to_string()),
+                        };
+
+                        list.push(DeviceItem {
+                            id: udid.clone(),
+                            name,
+                            platform: "iOS".to_string(),
+                            reality: "physical".to_string(),
+                            state,
+                            os_version: os_ver,
+                            model,
+                            product_type,
+                            serial_number: serial,
+                            udid,
+                            core_device_id: core_id,
+                            transport_type: transport,
+                            pairing_state: pairing,
+                            ddi_services: ddi,
+                            developer_mode: dev_mode,
+                            file_system: file_sys,
+                            capacity,
+                            ecid: ecid_str,
+                            screen_viewing_url: dp.screen_viewing_url,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    list
+}
+
+fn scan_ios_simulators() -> Vec<DeviceItem> {
+    let mut list = Vec::new();
+
+    let output = Command::new("xcrun")
+        .args(["simctl", "list", "devices", "available", "--json"])
+        .output();
+
+    if let Ok(out) = output {
+        if let Ok(parsed) = serde_json::from_slice::<SimctlOutput>(&out.stdout) {
+            if let Some(runtimes) = parsed.devices {
+                for (runtime_key, sim_list) in runtimes {
+                    let os_ver = if runtime_key.contains("iOS-") {
+                        let parts: Vec<&str> = runtime_key.split("iOS-").collect();
+                        if parts.len() > 1 {
+                            format!("iOS {}", parts[1].replace('-', "."))
+                        } else {
+                            "iOS Simulator".to_string()
+                        }
+                    } else {
+                        "iOS Simulator".to_string()
+                    };
+
+                    for sim in sim_list {
+                        if !sim.is_available {
+                            continue;
+                        }
+                        let model_name = sim.name.clone();
+                        let state = sim.state.to_lowercase();
+
+                        list.push(DeviceItem {
+                            id: sim.udid.clone(),
+                            name: sim.name,
+                            platform: "iOS".to_string(),
+                            reality: "simulated".to_string(),
+                            state,
+                            os_version: os_ver.clone(),
+                            model: model_name,
+                            product_type: sim.device_type_identifier.unwrap_or_else(|| "Simulator".to_string()),
+                            serial_number: "SIMULATOR".to_string(),
+                            udid: sim.udid.clone(),
+                            core_device_id: sim.udid.clone(),
+                            transport_type: "Local".to_string(),
+                            pairing_state: "Paired".to_string(),
+                            ddi_services: "Enabled".to_string(),
+                            developer_mode: "Enabled".to_string(),
+                            file_system: "CoreSimulator Snapshot".to_string(),
+                            capacity: "Shared Mac Storage".to_string(),
+                            ecid: "N/A".to_string(),
+                            screen_viewing_url: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    list
+}
+
+fn scan_android_devices() -> Vec<DeviceItem> {
+    let mut list = Vec::new();
+
+    let output = Command::new("/opt/homebrew/bin/adb")
+        .args(["devices", "-l"])
+        .output();
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("List of devices") || line.starts_with('*') {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+
+            let serial = parts[0].to_string();
+            let status = parts[1].to_string();
+
+            let transport = if serial.contains(':') {
+                "Wireless (Tailscale/LAN)".to_string()
+            } else {
+                "Wired USB".to_string()
+            };
+
+            let mut model = "Android Device".to_string();
+            let mut os_ver = "Android".to_string();
+            let mut manufacturer = "".to_string();
+
+            if status == "device" {
+                if let Ok(prop_out) = Command::new("/opt/homebrew/bin/adb")
+                    .args(["-s", &serial, "shell", "getprop ro.product.model; getprop ro.build.version.release; getprop ro.product.manufacturer"])
+                    .output()
+                {
+                    let prop_str = String::from_utf8_lossy(&prop_out.stdout);
+                    let prop_lines: Vec<&str> = prop_str.lines().collect();
+                    if !prop_lines.is_empty() && !prop_lines[0].trim().is_empty() {
+                        model = prop_lines[0].trim().to_string();
+                    }
+                    if prop_lines.len() > 1 && !prop_lines[1].trim().is_empty() {
+                        os_ver = format!("Android {}", prop_lines[1].trim());
+                    }
+                    if prop_lines.len() > 2 {
+                        manufacturer = prop_lines[2].trim().to_string();
+                    }
+                }
+            }
+
+            let display_name = if !manufacturer.is_empty() && !model.to_lowercase().contains(&manufacturer.to_lowercase()) {
+                format!("{} {}", manufacturer, model)
+            } else {
+                model.clone()
+            };
+
+            list.push(DeviceItem {
+                id: serial.clone(),
+                name: display_name,
+                platform: "Android".to_string(),
+                reality: "physical".to_string(),
+                state: if status == "device" { "connected".to_string() } else { status },
+                os_version: os_ver,
+                model,
+                product_type: "Android ARM64".to_string(),
+                serial_number: serial.clone(),
+                udid: serial.clone(),
+                core_device_id: serial.clone(),
+                transport_type: transport,
+                pairing_state: "Paired".to_string(),
+                ddi_services: "ADB Daemon Active".to_string(),
+                developer_mode: "USB Debugging Enabled".to_string(),
+                file_system: "ext4/f2fs".to_string(),
+                capacity: "Internal Flash".to_string(),
+                ecid: "N/A".to_string(),
+                screen_viewing_url: None,
+            });
+        }
+    }
+
+    list
+}
+
+#[tauri::command]
+fn get_all_devices() -> Vec<DeviceItem> {
+    let mut all = Vec::new();
+    all.extend(scan_ios_physical_devices());
+    all.extend(scan_android_devices());
+    all.extend(scan_ios_simulators());
+    all
+}
+
+#[tauri::command]
+fn connect_adb_device(ip_port: String) -> Result<String, String> {
+    let output = Command::new("/opt/homebrew/bin/adb")
+        .args(["connect", &ip_port])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let res = String::from_utf8_lossy(&output.stdout).to_string();
+    if res.contains("connected") {
+        Ok(res)
+    } else {
+        Err(res)
+    }
+}
+
+#[tauri::command]
+fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
+    let output = Command::new("/opt/homebrew/bin/adb")
+        .args(["disconnect", &ip_port])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn launch_view_screen(device_id: String, platform: String, reality: String, screen_url: Option<String>) -> Result<String, String> {
+    if platform == "Android" {
+        let status = Command::new("nohup")
+            .args([
+                "/opt/homebrew/bin/scrcpy",
+                "-s",
+                &device_id,
+                "--window-title",
+                &format!("Xhub - {}", device_id),
+                "--stay-awake",
+            ])
+            .spawn();
+
+        match status {
+            Ok(_) => Ok("Đã khởi chạy scrcpy".to_string()),
+            Err(e) => Err(format!("Lỗi chạy scrcpy: {}", e)),
+        }
+    } else if platform == "iOS" {
+        if reality == "simulated" {
+            let _ = Command::new("xcrun")
+                .args(["simctl", "boot", &device_id])
+                .output();
+            let _ = Command::new("open")
+                .args(["-a", "Simulator", "--args", "-CurrentDeviceUDID", &device_id])
+                .spawn();
+            Ok("Đã mở iOS Simulator".to_string())
+        } else {
+            if let Some(url) = screen_url {
+                let _ = Command::new("open").arg(&url).spawn();
+                Ok("Đã mở CoreDevice Screen Viewer".to_string())
+            } else {
+                let _ = Command::new("open")
+                    .args(["-a", "QuickTime Player"])
+                    .spawn();
+                Ok("Mở QuickTime để chiếu màn hình iPhone qua cáp Lightning/USB-C".to_string())
+            }
+        }
+    } else {
+        Err("Nền tảng không hỗ trợ".to_string())
+    }
+}
+
+#[tauri::command]
+fn send_android_keyevent(serial: String, keycode: u32) -> Result<String, String> {
+    let output = Command::new("/opt/homebrew/bin/adb")
+        .args(["-s", &serial, "shell", "input", "keyevent", &keycode.to_string()])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn take_screenshot(device_id: String, platform: String) -> Result<String, String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/trinhhao".to_string());
+    let dest_path = format!("{}/Downloads/Screenshot_{}_{}.png", home, platform, timestamp);
+
+    if platform == "Android" {
+        let remote_tmp = "/sdcard/screenshot_tmp.png";
+        let _ = Command::new("/opt/homebrew/bin/adb")
+            .args(["-s", &device_id, "shell", "screencap", "-p", remote_tmp])
+            .output();
+        let _ = Command::new("/opt/homebrew/bin/adb")
+            .args(["-s", &device_id, "pull", remote_tmp, &dest_path])
+            .output();
+        let _ = Command::new("/opt/homebrew/bin/adb")
+            .args(["-s", &device_id, "shell", "rm", remote_tmp])
+            .output();
+
+        let _ = Command::new("open").args(["-R", &dest_path]).spawn();
+        Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
+    } else if platform == "iOS" {
+        let _ = Command::new("xcrun")
+            .args(["simctl", "io", &device_id, "screenshot", &dest_path])
+            .output();
+        let _ = Command::new("open").args(["-R", &dest_path]).spawn();
+        Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
+    } else {
+        Err("Không hỗ trợ chụp màn hình".to_string())
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            get_all_devices,
+            connect_adb_device,
+            disconnect_adb_device,
+            launch_view_screen,
+            send_android_keyevent,
+            take_screenshot
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
