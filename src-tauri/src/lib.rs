@@ -413,8 +413,20 @@ fn get_all_devices() -> Vec<DeviceItem> {
     all
 }
 
+fn is_safe_identifier(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && !s.starts_with('-')
+        && s.len() <= 128
+        && s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == ':' || c == '-' || c == '_')
+}
+
 #[tauri::command]
 fn connect_adb_device(ip_port: String) -> Result<String, String> {
+    if !is_safe_identifier(&ip_port) {
+        return Err("Địa chỉ IP hoặc cổng không hợp lệ (chỉ chấp nhận ký tự an toàn)".to_string());
+    }
+
     let adb = resolve_bin("adb");
     let output = Command::new(&adb)
         .args(["connect", &ip_port])
@@ -431,6 +443,10 @@ fn connect_adb_device(ip_port: String) -> Result<String, String> {
 
 #[tauri::command]
 fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
+    if !is_safe_identifier(&ip_port) {
+        return Err("Địa chỉ IP không hợp lệ".to_string());
+    }
+
     let adb = resolve_bin("adb");
     let output = Command::new(&adb)
         .args(["disconnect", &ip_port])
@@ -442,6 +458,10 @@ fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
 
 #[tauri::command]
 fn launch_view_screen(device_id: String, platform: String, reality: String, screen_url: Option<String>) -> Result<String, String> {
+    if !is_safe_identifier(&device_id) {
+        return Err("Device ID không hợp lệ".to_string());
+    }
+
     if platform == "Android" {
         let scrcpy = resolve_bin("scrcpy");
         let status = Command::new("nohup")
@@ -470,8 +490,13 @@ fn launch_view_screen(device_id: String, platform: String, reality: String, scre
             Ok("Đã mở iOS Simulator".to_string())
         } else {
             if let Some(url) = screen_url {
-                let _ = Command::new("open").arg(&url).spawn();
-                Ok("Đã mở CoreDevice Screen Viewer".to_string())
+                // Ensure URL begins with devices://
+                if url.starts_with("devices://") {
+                    let _ = Command::new("open").arg(&url).spawn();
+                    Ok("Đã mở CoreDevice Screen Viewer".to_string())
+                } else {
+                    Err("URL xem màn hình không an toàn".to_string())
+                }
             } else {
                 let _ = Command::new("open")
                     .args(["-a", "QuickTime Player"])
@@ -486,6 +511,10 @@ fn launch_view_screen(device_id: String, platform: String, reality: String, scre
 
 #[tauri::command]
 fn send_android_keyevent(serial: String, keycode: u32) -> Result<String, String> {
+    if !is_safe_identifier(&serial) {
+        return Err("Serial thiết bị không hợp lệ".to_string());
+    }
+
     let adb = resolve_bin("adb");
     let output = Command::new(&adb)
         .args(["-s", &serial, "shell", "input", "keyevent", &keycode.to_string()])
@@ -497,14 +526,24 @@ fn send_android_keyevent(serial: String, keycode: u32) -> Result<String, String>
 
 #[tauri::command]
 fn take_screenshot(device_id: String, platform: String) -> Result<String, String> {
+    if !is_safe_identifier(&device_id) {
+        return Err("Device ID không hợp lệ".to_string());
+    }
+
+    let safe_platform = match platform.as_str() {
+        "Android" => "Android",
+        "iOS" => "iOS",
+        _ => return Err("Nền tảng không hỗ trợ chụp màn hình".to_string()),
+    };
+
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/trinhhao".to_string());
-    let dest_path = format!("{}/Downloads/Screenshot_{}_{}.png", home, platform, timestamp);
+    let dest_path = format!("{}/Downloads/Screenshot_{}_{}.png", home, safe_platform, timestamp);
 
-    if platform == "Android" {
+    if safe_platform == "Android" {
         let adb = resolve_bin("adb");
         let remote_tmp = "/sdcard/screenshot_tmp.png";
         let _ = Command::new(&adb)
@@ -519,14 +558,12 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
 
         let _ = Command::new("open").args(["-R", &dest_path]).spawn();
         Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
-    } else if platform == "iOS" {
+    } else {
         let _ = Command::new("xcrun")
             .args(["simctl", "io", &device_id, "screenshot", &dest_path])
             .output();
         let _ = Command::new("open").args(["-R", &dest_path]).spawn();
         Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
-    } else {
-        Err("Không hỗ trợ chụp màn hình".to_string())
     }
 }
 
