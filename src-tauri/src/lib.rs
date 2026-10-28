@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
+mod adb_wifi;
+mod android_mirror;
+mod bonjour;
+mod ios_mirror;
+mod network_scan;
+
 fn get_enhanced_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let default_paths = format!(
@@ -192,13 +198,21 @@ struct SimctlDevice {
 
 fn scan_ios_physical_devices() -> Vec<DeviceItem> {
     let mut list = Vec::new();
-    let tmp_file = "/tmp/devicectl_scan.json";
+    // Unique path per call: the network scan may run concurrently with the device list refresh
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let tmp_file = std::env::temp_dir().join(format!("devicectl_scan_{}.json", nanos));
 
     let _ = Command::new("xcrun")
-        .args(["devicectl", "list", "devices", "--json-output", tmp_file])
+        .args(["devicectl", "list", "devices", "--json-output"])
+        .arg(&tmp_file)
         .output();
 
-    if let Ok(content) = std::fs::read_to_string(tmp_file) {
+    let content = std::fs::read_to_string(&tmp_file);
+    let _ = std::fs::remove_file(&tmp_file);
+    if let Ok(content) = content {
         if let Ok(parsed) = serde_json::from_str::<DevicectlOutput>(&content) {
             if let Some(res) = parsed.result {
                 if let Some(devices) = res.devices {
@@ -222,7 +236,7 @@ fn scan_ios_physical_devices() -> Vec<DeviceItem> {
 
                         let transport = match cp.transport_type.as_deref() {
                             Some("wired") => "Wired".to_string(),
-                            Some("wireless") => "Wireless".to_string(),
+                            Some("wireless") | Some("localNetwork") => "Wireless".to_string(),
                             _ => "Wired".to_string(),
                         };
 
@@ -456,7 +470,8 @@ fn is_safe_identifier(s: &str) -> bool {
         && s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == ':' || c == '-' || c == '_')
 }
 
-#[tauri::command]
+// async: `adb connect` to an unreachable host can block for seconds
+#[tauri::command(async)]
 fn connect_adb_device(ip_port: String) -> Result<String, String> {
     if !is_safe_identifier(&ip_port) {
         return Err("Địa chỉ IP hoặc cổng không hợp lệ (chỉ chấp nhận ký tự an toàn)".to_string());
@@ -761,7 +776,17 @@ pub fn run() {
             take_screenshot,
             check_system_environment,
             pick_app_file,
-            install_app_package
+            install_app_package,
+            network_scan::scan_network_devices,
+            network_scan::pair_adb_device,
+            network_scan::connect_ios_device,
+            adb_wifi::enable_adb_wifi,
+            android_mirror::start_android_mirror,
+            android_mirror::stop_android_mirror,
+            android_mirror::android_mirror_touch,
+            android_mirror::android_mirror_key,
+            ios_mirror::start_ios_mirror,
+            ios_mirror::stop_ios_mirror
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

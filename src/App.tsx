@@ -27,6 +27,9 @@ import {
   UploadCloud,
   FolderOpen
 } from 'lucide-react';
+import { NetworkScanPanel } from './network-scan-panel';
+import { ScreenMirror } from './screen-mirror';
+import { forgetDevice, reconnectRemembered, rememberConnected, rememberDevice } from './remembered-devices';
 import './App.css';
 
 interface DeviceItem {
@@ -61,6 +64,9 @@ export function App() {
   
   // Modal state
   const [showAddModal, setShowAddModal] = useState(false);
+  const [enablingWifi, setEnablingWifi] = useState(false);
+  // Device whose screen is shown live in the center mockup (Android, or iPhone over USB)
+  const [mirrorId, setMirrorId] = useState<string | null>(null);
   const [adbIpInput, setAdbIpInput] = useState('100.76.122.48:5555');
   const [envWarning, setEnvWarning] = useState<string | null>(null);
 
@@ -146,6 +152,9 @@ export function App() {
       if (isManual) setLoading(true);
       const res = await invoke<DeviceItem[]>('get_all_devices');
       setDevices(res);
+      rememberConnected(
+        res.filter((d) => d.platform === 'Android' && d.state === 'connected').map((d) => d.id)
+      );
       setSelectedId((prev) => {
         // 1. Nếu người dùng đã chọn thiết bị và thiết bị vẫn đang kết nối -> giữ nguyên tuyệt đối
         if (prev && res.some((d) => d.id === prev)) {
@@ -165,8 +174,22 @@ export function App() {
     }
   };
 
-  useEffect(() => {
+  // Reconnects wireless phones used before (also run by the manual refresh button)
+  const reconnectKnownDevices = async () => {
+    const count = await reconnectRemembered();
+    if (count > 0) {
+      showToast(`Đã tự kết nối lại ${count} thiết bị không dây`);
+      fetchDevices(false);
+    }
+  };
+
+  const handleRefresh = () => {
     fetchDevices(true);
+    reconnectKnownDevices();
+  };
+
+  useEffect(() => {
+    handleRefresh();
     const interval = setInterval(() => {
       fetchDevices(false);
     }, 5000);
@@ -199,6 +222,8 @@ export function App() {
     () => devices.find((d) => d.id === selectedId) || devices[0] || null,
     [devices, selectedId]
   );
+  const canMirrorInline = selectedDevice?.reality === 'physical';
+  const isMirroring = canMirrorInline && mirrorId === selectedDevice?.id;
 
   const showToast = (msg: string) => {
     setStatusMessage(msg);
@@ -207,6 +232,16 @@ export function App() {
 
   // Launch screen mirroring
   const handleViewScreen = async () => {
+    if (!selectedDevice) return;
+    if (canMirrorInline) {
+      setMirrorId(mirrorId === selectedDevice.id ? null : selectedDevice.id);
+      return;
+    }
+    await openExternalViewer();
+  };
+
+  // Opens the screen in a separate window (scrcpy / Simulator / Xcode viewer)
+  const openExternalViewer = async () => {
     if (!selectedDevice) return;
     try {
       showToast(`Đang kết nối màn hình ${selectedDevice.name}...`);
@@ -241,6 +276,10 @@ export function App() {
   const handleKey = async (code: number, name: string) => {
     if (!selectedDevice || selectedDevice.platform !== 'Android') return;
     try {
+      if (isMirroring) {
+        await invoke('android_mirror_key', { serial: selectedDevice.id, keycode: code });
+        return;
+      }
       await invoke('send_android_keyevent', {
         serial: selectedDevice.id,
         keycode: code,
@@ -265,11 +304,31 @@ export function App() {
     }
   };
 
+  // USB Android -> adb over Wi-Fi, then remembered for auto-reconnect
+  const handleEnableWifi = async () => {
+    if (!selectedDevice) return;
+    setEnablingWifi(true);
+    try {
+      showToast('Đang bật kết nối Wi-Fi...');
+      const address = await invoke<string>('enable_adb_wifi', { serial: selectedDevice.id });
+      rememberDevice({ address });
+      setSelectedId(address);
+      showToast(`Đã kết nối qua Wi-Fi (${address}). Bạn có thể rút cáp.`);
+      fetchDevices(false);
+    } catch (err: any) {
+      showToast(`Lỗi: ${err}`);
+    } finally {
+      setEnablingWifi(false);
+    }
+  };
+
   // Disconnect ADB
   const handleDisconnectAdb = async () => {
     if (!selectedDevice || selectedDevice.platform !== 'Android') return;
     try {
       const res = await invoke<string>('disconnect_adb_device', { ipPort: selectedDevice.id });
+      // An explicit disconnect means "stop auto-reconnecting this phone"
+      forgetDevice(selectedDevice.id);
       showToast(res);
       fetchDevices(true);
     } catch (err: any) {
@@ -375,7 +434,7 @@ export function App() {
             <button
               className="icon-btn"
               title="Làm mới danh sách"
-              onClick={() => fetchDevices(true)}
+              onClick={handleRefresh}
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -584,6 +643,17 @@ export function App() {
         <div className="center-canvas">
           {selectedDevice ? (
             <div className="mockup-container">
+              {isMirroring ? (
+                <div className="phone-bezel mirroring">
+                  <ScreenMirror
+                    deviceId={selectedDevice.id}
+                    deviceName={selectedDevice.name}
+                    platform={selectedDevice.platform}
+                    notify={showToast}
+                    onEnded={() => setMirrorId(null)}
+                  />
+                </div>
+              ) : (
               <div className="phone-bezel">
                 <div
                   className={`phone-screen ${
@@ -591,7 +661,7 @@ export function App() {
                   }`}
                   onClick={handleViewScreen}
                   style={{ cursor: 'pointer' }}
-                  title="Nhấp để mở màn hình điều khiển scrcpy"
+                  title="Nhấp để xem màn hình thiết bị"
                 >
                   {/* Dynamic Island cho iOS hoặc Punch Hole cho Android */}
                   {selectedDevice.platform === 'iOS' ? (
@@ -605,10 +675,10 @@ export function App() {
                       <div className="screen-center-prompt">
                         <Monitor size={36} strokeWidth={1.6} color="rgba(255,255,255,0.95)" />
                         <span style={{ fontSize: '13px', fontWeight: 600, marginTop: '8px', color: '#fff' }}>
-                          Mở màn hình điều khiển
+                          Xem màn hình
                         </span>
                         <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.8)', marginTop: '2px' }}>
-                          Nhấp để khởi chạy scrcpy
+                          Nhấp để hiển thị và điều khiển ngay tại đây
                         </span>
                       </div>
 
@@ -640,6 +710,15 @@ export function App() {
                   )}
                 </div>
               </div>
+              )}
+
+              {isMirroring && selectedDevice.platform === 'Android' && (
+                <div className="mirror-nav">
+                  <button className="nav-btn" title="Quay lại (Back)" onClick={() => handleKey(4, 'Quay lại')}>◀</button>
+                  <button className="nav-btn" title="Màn hình chính (Home)" onClick={() => handleKey(3, 'Home')}>●</button>
+                  <button className="nav-btn" title="Ứng dụng gần đây (Recents)" onClick={() => handleKey(187, 'Đa nhiệm')}>■</button>
+                </div>
+              )}
 
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: '15px', fontWeight: 600 }}>
@@ -650,10 +729,18 @@ export function App() {
                 </div>
               </div>
 
-              <button className="view-screen-btn" onClick={handleViewScreen}>
-                <Monitor size={15} />
-                <span>View Screen</span>
-              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="view-screen-btn" onClick={handleViewScreen}>
+                  <Monitor size={15} />
+                  <span>{isMirroring ? 'Dừng xem' : 'View Screen'}</span>
+                </button>
+                {canMirrorInline && (
+                  <button className="view-screen-btn" onClick={openExternalViewer} title="Mở ở cửa sổ riêng (scrcpy với Android, trình xem của Xcode với iPhone)">
+                    <Maximize2 size={15} />
+                    <span>Cửa sổ riêng</span>
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
@@ -875,6 +962,10 @@ export function App() {
             <button className="secondary-pill-btn" onClick={handleDisconnectAdb}>
               Ngắt kết nối không dây
             </button>
+          ) : selectedDevice?.platform === 'Android' && selectedDevice.reality === 'physical' ? (
+            <button className="secondary-pill-btn" onClick={handleEnableWifi} disabled={enablingWifi}>
+              {enablingWifi ? 'Đang bật Wi-Fi...' : 'Bật kết nối Wi-Fi'}
+            </button>
           ) : (
             <button className="secondary-pill-btn">Edit Visibility</button>
           )}
@@ -884,10 +975,11 @@ export function App() {
       {/* POPUP MODAL THÊM KẾT NỐI ADB / TAILSCALE */}
       {showAddModal && (
         <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <h3>Kết nối thiết bị Android không dây</h3>
+          <div className="modal-card modal-card-wide" onClick={(e) => e.stopPropagation()}>
+            <h3>Kết nối thiết bị không dây</h3>
+            <NetworkScanPanel notify={showToast} onConnected={() => fetchDevices(true)} />
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-              Nhập IP & Port ADB (Tailscale hoặc Wi-Fi nội bộ):
+              Hoặc nhập IP & Port ADB thủ công (Tailscale hoặc Wi-Fi nội bộ):
             </p>
             <input
               type="text"
