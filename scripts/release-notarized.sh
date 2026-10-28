@@ -48,8 +48,8 @@ ditto "$APP" "$STAGING/Xhub.app"
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -quiet -volname "Xhub" -srcfolder "$STAGING" -format UDZO "$OUT/Xhub_${VERSION}_${ARCH}.dmg"
 
-NOTES="$(git log -1 --format=%s "v$VERSION" 2>/dev/null || echo "Xhub $VERSION")"
-NOTES="${RELEASE_NOTES:-$NOTES}" VERSION="$VERSION" ARCH="$ARCH" REPO="$REPO" OUT="$OUT" python3 - <<'PY'
+NOTES="${RELEASE_NOTES:-Xhub $VERSION}"
+NOTES="$NOTES" VERSION="$VERSION" ARCH="$ARCH" REPO="$REPO" OUT="$OUT" python3 - <<'PY'
 import datetime, json, os
 out, version, arch, repo = os.environ["OUT"], os.environ["VERSION"], os.environ["ARCH"], os.environ["REPO"]
 name = f"Xhub_{arch}.app.tar.gz"
