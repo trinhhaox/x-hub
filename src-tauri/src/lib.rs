@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 mod adb_wifi;
+mod android_input;
 mod android_mirror;
 mod bonjour;
 mod ios_mirror;
@@ -687,6 +688,8 @@ pub fn run() {
             android_mirror::stop_android_mirror,
             android_mirror::android_mirror_touch,
             android_mirror::android_mirror_key,
+            android_input::android_mirror_scroll,
+            android_input::android_mirror_text,
             ios_mirror::start_ios_mirror,
             ios_mirror::stop_ios_mirror
         ])

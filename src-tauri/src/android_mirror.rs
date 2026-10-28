@@ -258,7 +258,7 @@ pub fn stop_android_mirror(serial: String, session_id: String) {
     stop_session(&serial, Some(&session_id));
 }
 
-fn write_control(serial: &str, msg: &[u8]) -> Result<(), String> {
+pub(crate) fn write_control(serial: &str, msg: &[u8]) -> Result<(), String> {
     let mut sessions = SESSIONS.lock().map_err(|_| "Phiên xem màn hình bị lỗi".to_string())?;
     let session = sessions.get_mut(serial).ok_or_else(|| "Chưa mở màn hình thiết bị".to_string())?;
     session.control.write_all(msg).map_err(|e| e.to_string())
@@ -285,15 +285,16 @@ pub fn android_mirror_touch(serial: String, action: u8, x: i32, y: i32, width: u
 }
 
 /// Sends a key press (down + up) through the mirror's control socket.
+/// `meta` is an Android KeyEvent meta state (e.g. Ctrl/Shift for shortcuts and selection).
 #[tauri::command(async)]
-pub fn android_mirror_key(serial: String, keycode: u32) -> Result<(), String> {
+pub fn android_mirror_key(serial: String, keycode: u32, meta: Option<u32>) -> Result<(), String> {
     let mut msg = Vec::with_capacity(28);
     for action in [0u8, 1u8] {
         msg.push(0); // TYPE_INJECT_KEYCODE
         msg.push(action);
         msg.extend_from_slice(&keycode.to_be_bytes());
         msg.extend_from_slice(&0u32.to_be_bytes()); // repeat
-        msg.extend_from_slice(&0u32.to_be_bytes()); // meta state
+        msg.extend_from_slice(&meta.unwrap_or(0).to_be_bytes());
     }
     write_control(&serial, &msg)
 }

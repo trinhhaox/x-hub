@@ -427,6 +427,22 @@ body {
   touch-action: none;
 }
 
+/* Keyboard sink for the Android mirror: focusable but invisible */
+.mirror-input {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+
+.mirror-wrap:focus-within .mirror-canvas {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 .mirror-status {
   position: absolute;
   inset: 0;

@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type CompositionEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type PointerEvent,
+} from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
+import { androidKeyFor } from './android-keymap';
+import { decoderConfigFrom, toAvcc } from './h264-avcc';
 
 // Must match the message kinds in src-tauri/src/android_mirror.rs
 const MSG_VIDEO_SIZE = 0;
@@ -11,6 +22,10 @@ const FLAG_KEY = 2;
 const TOUCH_DOWN = 0;
 const TOUCH_UP = 1;
 const TOUCH_MOVE = 2;
+
+// Browser wheel pixels per Android scroll "notch"; trackpads send many small deltas
+const WHEEL_PIXELS_PER_NOTCH = 60;
+const WHEEL_LINE_PIXELS = 16;
 
 type SessionId = string | number;
 
@@ -33,58 +48,6 @@ interface ScreenMirrorProps {
   onEnded: () => void;
 }
 
-const NAL_SPS = 7;
-const NAL_PPS = 8;
-
-const hex2 = (n: number) => n.toString(16).padStart(2, '0');
-
-// Splits an Annex-B byte stream (00 00 01 / 00 00 00 01 start codes) into NAL units
-function splitNals(data: Uint8Array): Uint8Array[] {
-  const nals: Uint8Array[] = [];
-  let start = -1;
-  for (let i = 0; i + 2 < data.length; i++) {
-    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
-      if (start >= 0) nals.push(data.subarray(start, data[i - 1] === 0 ? i - 1 : i));
-      start = i + 3;
-      i += 2;
-    }
-  }
-  if (start >= 0 && start < data.length) nals.push(data.subarray(start));
-  return nals;
-}
-
-// Annex-B -> AVCC (4-byte big-endian length prefixes), the layout WebCodecs expects with a description
-function toAvcc(data: Uint8Array): Uint8Array {
-  const nals = splitNals(data);
-  const out = new Uint8Array(nals.reduce((n, nal) => n + 4 + nal.length, 0));
-  const view = new DataView(out.buffer);
-  let offset = 0;
-  for (const nal of nals) {
-    view.setUint32(offset, nal.length);
-    out.set(nal, offset + 4);
-    offset += 4 + nal.length;
-  }
-  return out;
-}
-
-// Builds the decoder config (codec string + avcC record) from scrcpy's SPS/PPS config packet
-function decoderConfigFrom(data: Uint8Array): VideoDecoderConfig | null {
-  const nals = splitNals(data);
-  const sps = nals.find((n) => (n[0] & 0x1f) === NAL_SPS);
-  const pps = nals.find((n) => (n[0] & 0x1f) === NAL_PPS);
-  if (!sps || !pps || sps.length < 4) return null;
-  const avcc = new Uint8Array([
-    1, sps[1], sps[2], sps[3], 0xff, 0xe1,
-    sps.length >> 8, sps.length & 0xff, ...sps,
-    1, pps.length >> 8, pps.length & 0xff, ...pps,
-  ]);
-  return {
-    codec: `avc1.${hex2(sps[1])}${hex2(sps[2])}${hex2(sps[3])}`,
-    description: avcc,
-    optimizeForLatency: true,
-  };
-}
-
 // Live device screen rendered inside xhub with WebCodecs (Android: touch-controllable)
 export function ScreenMirror({ deviceId, deviceName, platform, notify, onEnded }: ScreenMirrorProps) {
   const interactive = platform === 'Android';
@@ -92,6 +55,10 @@ export function ScreenMirror({ deviceId, deviceName, platform, notify, onEnded }
   const videoSize = useRef({ width: 0, height: 0 });
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const touching = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const lastPointer = useRef({ x: 0, y: 0 });
+  // Control commands run on a thread pool; chaining keeps touches, keys and text in order
+  const controlQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState<'starting' | 'live'>('starting');
 
   useEffect(() => {
@@ -186,10 +153,85 @@ export function ScreenMirror({ deviceId, deviceName, platform, notify, onEnded }
     // Restart only when the device changes, not when the parent's callbacks change identity
   }, [deviceId, platform]);
 
+  const sendControl = (command: string, args: Record<string, unknown>) => {
+    controlQueue.current = controlQueue.current
+      .then(() => invoke(command, { serial: deviceId, ...args }))
+      .catch(() => undefined);
+  };
+
   const sendTouch = (action: number, x: number, y: number) => {
     const { width, height } = videoSize.current;
     if (!width) return;
-    invoke('android_mirror_touch', { serial: deviceId, action, x, y, width, height }).catch(() => undefined);
+    lastPointer.current = { x, y };
+    sendControl('android_mirror_touch', { action, x, y, width, height });
+  };
+
+  // Wheel/trackpad scrolling, coalesced per animation frame (native listener: React's is passive)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!interactive || !canvas) return;
+    let acc = { x: 0, y: 0 };
+    let rafId = 0;
+    const flush = () => {
+      rafId = 0;
+      const { width, height } = videoSize.current;
+      if (!width) return;
+      const { x, y } = lastPointer.current;
+      sendControl('android_mirror_scroll', {
+        x, y, width, height,
+        hScroll: acc.x / WHEEL_PIXELS_PER_NOTCH,
+        vScroll: -acc.y / WHEEL_PIXELS_PER_NOTCH,
+      });
+      acc = { x: 0, y: 0 };
+    };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const scale = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? WHEEL_LINE_PIXELS : 1;
+      const rect = canvas.getBoundingClientRect();
+      const { width, height } = videoSize.current;
+      lastPointer.current = {
+        x: Math.round(((e.clientX - rect.left) / rect.width) * width),
+        y: Math.round(((e.clientY - rect.top) / rect.height) * height),
+      };
+      acc = { x: acc.x + e.deltaX * scale, y: acc.y + e.deltaY * scale };
+      if (!rafId) rafId = requestAnimationFrame(flush);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      cancelAnimationFrame(rafId);
+    };
+    // sendControl only closes over deviceId, already a dependency
+  }, [interactive, deviceId]);
+
+  // Keyboard: a hidden textarea receives keys and IME text while the mirror is focused
+  const sendText = (text: string) => {
+    if (text) sendControl('android_mirror_text', { text });
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    const key = androidKeyFor(e);
+    if (!key) return;
+    e.preventDefault();
+    sendControl('android_mirror_key', { keycode: key.keycode, meta: key.meta });
+  };
+
+  const onInput = (e: FormEvent<HTMLTextAreaElement>) => {
+    const native = e.nativeEvent as InputEvent;
+    if (native.isComposing) return;
+    sendText(native.data ?? e.currentTarget.value);
+    e.currentTarget.value = '';
+  };
+
+  const onCompositionEnd = (e: CompositionEvent<HTMLTextAreaElement>) => {
+    sendText(e.data);
+    e.currentTarget.value = '';
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    e.preventDefault();
+    sendText(e.clipboardData.getData('text/plain'));
   };
 
   // Maps a pointer position on the scaled canvas to device video pixels
@@ -204,6 +246,7 @@ export function ScreenMirror({ deviceId, deviceName, platform, notify, onEnded }
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
+    inputRef.current?.focus({ preventScroll: true });
     touching.current = true;
     const p = toVideo(e);
     sendTouch(TOUCH_DOWN, p.x, p.y);
@@ -243,6 +286,21 @@ export function ScreenMirror({ deviceId, deviceName, platform, notify, onEnded }
         onPointerUp={interactive ? onPointerUp : undefined}
         onPointerCancel={interactive ? onPointerUp : undefined}
       />
+      {interactive && (
+        <textarea
+          ref={inputRef}
+          className="mirror-input"
+          aria-label="Gõ phím vào điện thoại"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          onKeyDown={onKeyDown}
+          onInput={onInput}
+          onCompositionEnd={onCompositionEnd}
+          onPaste={onPaste}
+        />
+      )}
       {status === 'starting' && <div className="mirror-status">Đang kết nối màn hình...</div>}
     </div>
   );
