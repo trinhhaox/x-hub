@@ -36,7 +36,7 @@ interface DeviceItem {
   id: string;
   name: string;
   platform: 'iOS' | 'Android' | string;
-  reality: 'physical' | 'simulated' | string;
+  reality: 'physical' | string;
   state: string;
   os_version: string;
   model: string;
@@ -213,10 +213,6 @@ export function App() {
     [filtered]
   );
 
-  const simulatorDevices = useMemo(
-    () => filtered.filter((d) => d.reality === 'simulated'),
-    [filtered]
-  );
 
   const selectedDevice = useMemo(
     () => devices.find((d) => d.id === selectedId) || devices[0] || null,
@@ -240,7 +236,7 @@ export function App() {
     await openExternalViewer();
   };
 
-  // Opens the screen in a separate window (scrcpy / Simulator / Xcode viewer)
+  // Opens the screen in a separate window (scrcpy / Xcode viewer)
   const openExternalViewer = async () => {
     if (!selectedDevice) return;
     try {
@@ -248,7 +244,6 @@ export function App() {
       const res = await invoke<string>('launch_view_screen', {
         deviceId: selectedDevice.id,
         platform: selectedDevice.platform,
-        reality: selectedDevice.reality,
         screenUrl: selectedDevice.screen_viewing_url || null,
       });
       showToast(res);
@@ -349,7 +344,6 @@ export function App() {
       const res = await invoke<string>('install_app_package', {
         deviceId: selectedDevice.id,
         platform: selectedDevice.platform,
-        reality: selectedDevice.reality,
         filePath,
       });
       showToast(res);
@@ -481,35 +475,6 @@ export function App() {
             );
           })}
 
-          {/* Simulators Section */}
-          {simulatorDevices.length > 0 && (
-            <>
-              <div className="list-section-title" style={{ marginTop: '12px' }}>
-                Simulators
-              </div>
-              {simulatorDevices.map((dev) => {
-                const isSelected = selectedId === dev.id;
-                return (
-                  <div
-                    key={dev.id}
-                    className={`device-row ${isSelected ? 'selected' : ''}`}
-                    onClick={() => setSelectedId(dev.id)}
-                  >
-                    <div className="device-icon-box">
-                      <Smartphone size={22} strokeWidth={1.5} color="var(--text-muted)" />
-                    </div>
-                    <div className="device-info-col">
-                      <div className="device-title">{dev.name}</div>
-                      <div className="device-subtitle">Simulator</div>
-                    </div>
-                    <div className="device-badge">
-                      {dev.os_version.replace(/^(iOS|Android)\s*/, '')}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
         </div>
       </div>
 
@@ -943,7 +908,6 @@ export function App() {
                 ) : (
                   <>
                     <li>Thiết bị iOS cần bật <strong>Developer Mode</strong>.</li>
-                    <li>iOS Simulator hỗ trợ trực tiếp gói <code>.app</code> và <code>.ipa</code>.</li>
                   </>
                 )}
               </ul>

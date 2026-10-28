@@ -99,7 +99,7 @@ pub struct DeviceItem {
     pub id: String,
     pub name: String,
     pub platform: String, // "iOS" | "Android"
-    pub reality: String,  // "physical" | "simulated"
+    pub reality: String,  // "physical"
     pub state: String,    // "connected" | "disconnected" | "booted" | "shutdown"
     pub os_version: String,
     pub model: String,
@@ -178,22 +178,6 @@ struct DevicectlConnProps {
     pairing_state: Option<String>,
     #[serde(rename = "tunnelState")]
     tunnel_state: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-struct SimctlOutput {
-    devices: Option<std::collections::HashMap<String, Vec<SimctlDevice>>>,
-}
-
-#[derive(Deserialize, Default)]
-struct SimctlDevice {
-    name: String,
-    udid: String,
-    state: String,
-    #[serde(rename = "isAvailable")]
-    is_available: bool,
-    #[serde(rename = "deviceTypeIdentifier")]
-    device_type_identifier: Option<String>,
 }
 
 fn scan_ios_physical_devices() -> Vec<DeviceItem> {
@@ -305,65 +289,6 @@ fn scan_ios_physical_devices() -> Vec<DeviceItem> {
     list
 }
 
-fn scan_ios_simulators() -> Vec<DeviceItem> {
-    let mut list = Vec::new();
-
-    let output = Command::new("xcrun")
-        .args(["simctl", "list", "devices", "available", "--json"])
-        .output();
-
-    if let Ok(out) = output {
-        if let Ok(parsed) = serde_json::from_slice::<SimctlOutput>(&out.stdout) {
-            if let Some(runtimes) = parsed.devices {
-                for (runtime_key, sim_list) in runtimes {
-                    let os_ver = if runtime_key.contains("iOS-") {
-                        let parts: Vec<&str> = runtime_key.split("iOS-").collect();
-                        if parts.len() > 1 {
-                            format!("iOS {}", parts[1].replace('-', "."))
-                        } else {
-                            "iOS Simulator".to_string()
-                        }
-                    } else {
-                        "iOS Simulator".to_string()
-                    };
-
-                    for sim in sim_list {
-                        if !sim.is_available {
-                            continue;
-                        }
-                        let model_name = sim.name.clone();
-                        let state = sim.state.to_lowercase();
-
-                        list.push(DeviceItem {
-                            id: sim.udid.clone(),
-                            name: sim.name,
-                            platform: "iOS".to_string(),
-                            reality: "simulated".to_string(),
-                            state,
-                            os_version: os_ver.clone(),
-                            model: model_name,
-                            product_type: sim.device_type_identifier.unwrap_or_else(|| "Simulator".to_string()),
-                            serial_number: "SIMULATOR".to_string(),
-                            udid: sim.udid.clone(),
-                            core_device_id: sim.udid.clone(),
-                            transport_type: "Local".to_string(),
-                            pairing_state: "Paired".to_string(),
-                            ddi_services: "Enabled".to_string(),
-                            developer_mode: "Enabled".to_string(),
-                            file_system: "CoreSimulator Snapshot".to_string(),
-                            capacity: "Shared Mac Storage".to_string(),
-                            ecid: "N/A".to_string(),
-                            screen_viewing_url: None,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    list
-}
-
 fn scan_android_devices() -> Vec<DeviceItem> {
     let mut list = Vec::new();
     let adb = resolve_bin("adb");
@@ -458,7 +383,6 @@ fn get_all_devices() -> Vec<DeviceItem> {
     let mut all = Vec::new();
     all.extend(scan_ios_physical_devices());
     all.extend(scan_android_devices());
-    all.extend(scan_ios_simulators());
     all
 }
 
@@ -511,7 +435,7 @@ fn disconnect_adb_device(ip_port: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn launch_view_screen(device_id: String, platform: String, reality: String, screen_url: Option<String>) -> Result<String, String> {
+fn launch_view_screen(device_id: String, platform: String, screen_url: Option<String>) -> Result<String, String> {
     if !is_safe_identifier(&device_id) {
         return Err("Device ID không hợp lệ".to_string());
     }
@@ -575,29 +499,19 @@ fn launch_view_screen(device_id: String, platform: String, reality: String, scre
             Err(e) => Err(format!("Lỗi chạy scrcpy: {}", e)),
         }
     } else if platform == "iOS" {
-        if reality == "simulated" {
-            let _ = Command::new("xcrun")
-                .args(["simctl", "boot", &device_id])
-                .output();
-            let _ = Command::new("open")
-                .args(["-a", "Simulator", "--args", "-CurrentDeviceUDID", &device_id])
-                .spawn();
-            Ok("Đã mở iOS Simulator".to_string())
-        } else {
-            if let Some(url) = screen_url {
-                // Ensure URL begins with devices://
-                if url.starts_with("devices://") {
-                    let _ = Command::new("open").arg(&url).spawn();
-                    Ok("Đã mở CoreDevice Screen Viewer".to_string())
-                } else {
-                    Err("URL xem màn hình không an toàn".to_string())
-                }
+        if let Some(url) = screen_url {
+            // Ensure URL begins with devices://
+            if url.starts_with("devices://") {
+                let _ = Command::new("open").arg(&url).spawn();
+                Ok("Đã mở CoreDevice Screen Viewer".to_string())
             } else {
-                let _ = Command::new("open")
-                    .args(["-a", "QuickTime Player"])
-                    .spawn();
-                Ok("Mở QuickTime để chiếu màn hình iPhone qua cáp Lightning/USB-C".to_string())
+                Err("URL xem màn hình không an toàn".to_string())
             }
+        } else {
+            let _ = Command::new("open")
+                .args(["-a", "QuickTime Player"])
+                .spawn();
+            Ok("Mở QuickTime để chiếu màn hình iPhone qua cáp Lightning/USB-C".to_string())
         }
     } else {
         Err("Nền tảng không hỗ trợ".to_string())
@@ -660,9 +574,13 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
         let _ = Command::new("open").args(["-R", &dest_path]).spawn();
         Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
     } else {
-        let _ = Command::new("xcrun")
-            .args(["simctl", "io", &device_id, "screenshot", &dest_path])
-            .output();
+        let output = Command::new("xcrun")
+            .args(["devicectl", "device", "capture", "screenshot", "--device", &device_id, "--destination", &dest_path, "-q"])
+            .output()
+            .map_err(|e| format!("Không chạy được devicectl: {}", e))?;
+        if !output.status.success() {
+            return Err(format!("Không chụp được màn hình iPhone: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
         let _ = Command::new("open").args(["-R", &dest_path]).spawn();
         Ok(format!("Ảnh chụp đã lưu tại: {}", dest_path))
     }
@@ -696,7 +614,6 @@ fn pick_app_file() -> Result<Option<String>, String> {
 fn install_app_package(
     device_id: String,
     platform: String,
-    reality: String,
     file_path: String,
 ) -> Result<String, String> {
     if !is_safe_identifier(&device_id) {
@@ -728,33 +645,18 @@ fn install_app_package(
             Err(format!("Cài đặt thất bại:\n{}", combined))
         }
     } else if platform == "iOS" {
-        if reality == "simulated" {
-            let output = Command::new("xcrun")
-                .env("PATH", &enhanced_path)
-                .args(["simctl", "install", &device_id, &file_path])
-                .output()
-                .map_err(|e| format!("Lỗi khởi chạy simctl install: {}", e))?;
+        let output = Command::new("xcrun")
+            .env("PATH", &enhanced_path)
+            .args(["devicectl", "device", "install", "app", "--device", &device_id, &file_path])
+            .output()
+            .map_err(|e| format!("Lỗi khởi chạy devicectl install: {}", e))?;
 
-            if output.status.success() {
-                Ok(format!("Cài đặt thành công lên iOS Simulator {}", device_id))
-            } else {
-                let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-                Err(format!("Lỗi cài đặt Simulator:\n{}", err_msg))
-            }
+        if output.status.success() {
+            Ok(format!("Cài đặt thành công lên thiết bị iOS {}", device_id))
         } else {
-            let output = Command::new("xcrun")
-                .env("PATH", &enhanced_path)
-                .args(["devicectl", "device", "install", "app", "--device", &device_id, &file_path])
-                .output()
-                .map_err(|e| format!("Lỗi khởi chạy devicectl install: {}", e))?;
-
-            if output.status.success() {
-                Ok(format!("Cài đặt thành công lên thiết bị iOS {}", device_id))
-            } else {
-                let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-                let out_msg = String::from_utf8_lossy(&output.stdout).to_string();
-                Err(format!("Lỗi cài đặt iOS:\n{}\n{}", err_msg, out_msg))
-            }
+            let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+            let out_msg = String::from_utf8_lossy(&output.stdout).to_string();
+            Err(format!("Lỗi cài đặt iOS:\n{}\n{}", err_msg, out_msg))
         }
     } else {
         Err("Nền tảng không hỗ trợ".to_string())
