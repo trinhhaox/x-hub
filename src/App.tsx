@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { check } from '@tauri-apps/plugin-updater';
@@ -29,8 +29,18 @@ import {
 } from 'lucide-react';
 import { NetworkScanPanel } from './network-scan-panel';
 import { ScreenMirror } from './screen-mirror';
-import { forgetDevice, reconnectRemembered, rememberConnected, rememberDevice } from './remembered-devices';
+import {
+  forgetDevice,
+  reconnectMissing,
+  reconnectRemembered,
+  rememberConnected,
+  rememberDevice,
+} from './remembered-devices';
 import './App.css';
+
+// Remembered wireless phones that are offline get retried at most this often
+const RECONNECT_RETRY_MS = 30_000;
+const IOS_CABLE_HINT = 'iPhone đang nối qua Wi-Fi. Cắm cáp USB và mở khoá máy để xem màn hình.';
 
 interface DeviceItem {
   id: string;
@@ -152,9 +162,11 @@ export function App() {
       if (isManual) setLoading(true);
       const res = await invoke<DeviceItem[]>('get_all_devices');
       setDevices(res);
-      rememberConnected(
-        res.filter((d) => d.platform === 'Android' && d.state === 'connected').map((d) => d.id)
-      );
+      const connectedAndroid = res
+        .filter((d) => d.platform === 'Android' && d.state === 'connected')
+        .map((d) => d.id);
+      rememberConnected(connectedAndroid);
+      retryMissingDevices(connectedAndroid);
       setSelectedId((prev) => {
         // 1. Nếu người dùng đã chọn thiết bị và thiết bị vẫn đang kết nối -> giữ nguyên tuyệt đối
         if (prev && res.some((d) => d.id === prev)) {
@@ -180,6 +192,25 @@ export function App() {
     if (count > 0) {
       showToast(`Đã tự kết nối lại ${count} thiết bị không dây`);
       fetchDevices(false);
+    }
+  };
+
+  // Background retry for remembered phones that are offline now; throttled and never overlapping
+  const retryInFlight = useRef(false);
+  // Starts at mount time: launch is already covered by reconnectRemembered() in handleRefresh
+  const lastRetryAt = useRef(Date.now());
+  const retryMissingDevices = async (connected: string[]) => {
+    if (retryInFlight.current || Date.now() - lastRetryAt.current < RECONNECT_RETRY_MS) return;
+    retryInFlight.current = true;
+    lastRetryAt.current = Date.now();
+    try {
+      const count = await reconnectMissing(connected);
+      if (count > 0) {
+        showToast(`Đã tự kết nối lại ${count} thiết bị không dây`);
+        fetchDevices(false);
+      }
+    } finally {
+      retryInFlight.current = false;
     }
   };
 
@@ -219,6 +250,9 @@ export function App() {
     [devices, selectedId]
   );
   const canMirrorInline = selectedDevice?.reality === 'physical';
+  // In-app iPhone capture only works over USB (CoreMediaIO), not for a Wi-Fi-paired iPhone
+  const iosNeedsCable =
+    selectedDevice?.platform === 'iOS' && selectedDevice.transport_type.includes('Wireless');
   const isMirroring = canMirrorInline && mirrorId === selectedDevice?.id;
 
   const showToast = (msg: string) => {
@@ -229,6 +263,10 @@ export function App() {
   // Launch screen mirroring
   const handleViewScreen = async () => {
     if (!selectedDevice) return;
+    if (iosNeedsCable && !isMirroring) {
+      showToast(IOS_CABLE_HINT);
+      return;
+    }
     if (canMirrorInline) {
       setMirrorId(mirrorId === selectedDevice.id ? null : selectedDevice.id);
       return;
@@ -695,7 +733,12 @@ export function App() {
               </div>
 
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="view-screen-btn" onClick={handleViewScreen}>
+                <button
+                  className="view-screen-btn"
+                  onClick={handleViewScreen}
+                  disabled={iosNeedsCable && !isMirroring}
+                  title={iosNeedsCable && !isMirroring ? IOS_CABLE_HINT : undefined}
+                >
                   <Monitor size={15} />
                   <span>{isMirroring ? 'Dừng xem' : 'View Screen'}</span>
                 </button>
@@ -706,6 +749,7 @@ export function App() {
                   </button>
                 )}
               </div>
+              {iosNeedsCable && !isMirroring && <div className="mirror-hint">{IOS_CABLE_HINT}</div>}
             </div>
           ) : (
             <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>

@@ -49,6 +49,26 @@ export function forgetDevice(address: string) {
   save(loadRemembered().filter((d) => d.address !== address));
 }
 
+/**
+ * Cheap background retry: connects remembered addresses that are not in `connected`, without a
+ * network scan. Covers phones that were offline at launch or dropped later (Tailscale sleep,
+ * adb server restart), which the launch-time reconnect alone would never pick up again.
+ */
+export async function reconnectMissing(connected: string[]): Promise<number> {
+  const missing = loadRemembered().filter((k) => !connected.includes(k.address));
+  const results = await Promise.all(
+    missing.map(async (k) => {
+      try {
+        const res = await invoke<string>('connect_adb_device', { ipPort: k.address });
+        return !res.includes('already');
+      } catch {
+        return false; // still offline; try again on the next tick
+      }
+    })
+  );
+  return results.filter(Boolean).length;
+}
+
 /** Scans the network and reconnects remembered devices; returns how many were newly connected. */
 export async function reconnectRemembered(): Promise<number> {
   const known = loadRemembered();
