@@ -15,8 +15,10 @@ REPO="trinhhaox/x-hub"
 VERSION="$(node -p "require('./package.json').version")"
 ARCH="aarch64"
 ENTITLEMENTS="src-tauri/Entitlements.plist"
-APP="src-tauri/target/release/bundle/macos/Xhub.app"
-OUT="src-tauri/target/release/notarized"
+# tauri build writes to CARGO_TARGET_DIR when set (shared target dir on the external drive)
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}"
+APP="$TARGET_DIR/release/bundle/macos/Xhub.app"
+OUT="$TARGET_DIR/release/notarized"
 
 # Khoá ký updater: tauri build cần nó (createUpdaterArtifacts) và dùng để ký gói cập nhật
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY")"
