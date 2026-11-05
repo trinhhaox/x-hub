@@ -250,7 +250,7 @@ fn scan_ios_physical_devices() -> Vec<DeviceItem> {
                         let capacity = if let Some(cap) = hw.internal_storage_capacity {
                             format!("{} GB", cap / 1_000_000_000)
                         } else {
-                            "256 GB".to_string()
+                            "—".to_string()
                         };
 
                         let ecid_str = hw.ecid.map(|e| e.to_string()).unwrap_or_else(|| "N/A".to_string());
@@ -357,19 +357,19 @@ fn scan_android_devices() -> Vec<DeviceItem> {
                 name: display_name,
                 platform: "Android".to_string(),
                 reality: "physical".to_string(),
+                ddi_services: if status == "device" { "ADB Daemon Active".to_string() } else { "—".to_string() },
+                developer_mode: if status == "device" { "USB Debugging Enabled".to_string() } else { "—".to_string() },
                 state: if status == "device" { "connected".to_string() } else { status },
                 os_version: os_ver,
                 model,
-                product_type: "Android ARM64".to_string(),
+                product_type: "—".to_string(),
                 serial_number: serial.clone(),
                 udid: serial.clone(),
                 core_device_id: serial.clone(),
                 transport_type: transport,
                 pairing_state: "Paired".to_string(),
-                ddi_services: "ADB Daemon Active".to_string(),
-                developer_mode: "USB Debugging Enabled".to_string(),
-                file_system: "ext4/f2fs".to_string(),
-                capacity: "Internal Flash".to_string(),
+                file_system: "—".to_string(),
+                capacity: "—".to_string(),
                 ecid: "N/A".to_string(),
                 screen_viewing_url: None,
             });
@@ -552,7 +552,7 @@ fn take_screenshot(device_id: String, platform: String) -> Result<String, String
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/trinhhao".to_string());
+    let home = std::env::var("HOME").map_err(|_| "Không xác định được thư mục người dùng".to_string())?;
     let dest_path = format!("{}/Downloads/Screenshot_{}_{}.png", home, safe_platform, timestamp);
 
     if safe_platform == "Android" {

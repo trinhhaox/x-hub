@@ -8,14 +8,10 @@ import {
   Search,
   Plus,
   Maximize2,
-  ZoomIn,
-  ZoomOut,
   Camera,
   Power,
   Volume2,
   VolumeX,
-  SlidersHorizontal,
-  FileText,
   Info,
   RefreshCw,
   Monitor,
@@ -68,7 +64,7 @@ export function App() {
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'info' | 'apps' | 'profiles'>('info');
+  const [activeTab, setActiveTab] = useState<'info' | 'apps'>('info');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   
@@ -77,7 +73,7 @@ export function App() {
   const [enablingWifi, setEnablingWifi] = useState(false);
   // Device whose screen is shown live in the center mockup (Android, or iPhone over USB)
   const [mirrorId, setMirrorId] = useState<string | null>(null);
-  const [adbIpInput, setAdbIpInput] = useState('100.76.122.48:5555');
+  const [adbIpInput, setAdbIpInput] = useState('');
   const [envWarning, setEnvWarning] = useState<string | null>(null);
 
   // Auto-updater state
@@ -595,16 +591,6 @@ export function App() {
             >
               <Camera size={15} />
             </button>
-            <div style={{ width: '1px', height: '16px', background: 'var(--border-subtle)', margin: '0 4px' }} />
-            <button className="icon-btn" title="Phóng to">
-              <ZoomIn size={15} />
-            </button>
-            <button className="icon-btn" title="Thu nhỏ">
-              <ZoomOut size={15} />
-            </button>
-            <button className="icon-btn" title="Toàn màn hình">
-              <Maximize2 size={15} />
-            </button>
           </div>
         </div>
 
@@ -787,12 +773,6 @@ export function App() {
           >
             <ArrowUpCircle size={15} color={availableUpdate ? 'var(--accent)' : undefined} />
           </button>
-          <button className="icon-btn" title="Settings">
-            <SlidersHorizontal size={15} />
-          </button>
-          <button className="icon-btn" title="Docs">
-            <FileText size={15} />
-          </button>
           <button className="icon-btn active" title="Device Info">
             <Info size={15} />
           </button>
@@ -811,12 +791,6 @@ export function App() {
               onClick={() => setActiveTab('apps')}
             >
               Apps
-            </button>
-            <button
-              className={activeTab === 'profiles' ? 'active' : ''}
-              onClick={() => setActiveTab('profiles')}
-            >
-              Profiles
             </button>
           </div>
         </div>
@@ -959,12 +933,6 @@ export function App() {
           </div>
         )}
 
-        {selectedDevice && activeTab === 'profiles' && (
-          <div style={{ padding: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            <p>Không có provisioning profile nào trên thiết bị này.</p>
-          </div>
-        )}
-
         <div className="inspector-footer">
           {selectedDevice?.platform === 'Android' && selectedDevice.transport_type.includes('Wireless') ? (
             <button className="secondary-pill-btn" onClick={handleDisconnectAdb}>
@@ -974,9 +942,7 @@ export function App() {
             <button className="secondary-pill-btn" onClick={handleEnableWifi} disabled={enablingWifi}>
               {enablingWifi ? 'Đang bật Wi-Fi...' : 'Bật kết nối Wi-Fi'}
             </button>
-          ) : (
-            <button className="secondary-pill-btn">Edit Visibility</button>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -994,7 +960,7 @@ export function App() {
               className="modal-input"
               value={adbIpInput}
               onChange={(e) => setAdbIpInput(e.target.value)}
-              placeholder="100.76.122.48:5555"
+              placeholder="192.168.1.20:5555"
               autoFocus
             />
             <div className="modal-actions">
