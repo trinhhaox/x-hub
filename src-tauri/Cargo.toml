@@ -1,8 +1,8 @@
 [package]
 name = "device-hub"
 version = "0.1.6"
-description = "A Tauri App"
-authors = ["you"]
+description = "Xhub — macOS device manager for iPhone and Android"
+authors = ["Trinh Hao"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
